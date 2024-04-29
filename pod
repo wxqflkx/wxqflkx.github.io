@@ -1,0 +1,112 @@
+"""
+两个机房
+部署应用程序，为保证高可用，在两个机房分别部署一个副本
+
+
+#给机房打标签 (就是你的业务机器要有这个标签) 
+kubectl label nodes k8s-node01 wz=IDC
+kubectl label nodes k8s-node02 wz=IDC2
+
+
+Deployment 的副本数目为 2
+
+Node 节点亲和性调度都是由 nodeAffinity 字段来完成的
+
+
+使用Pod 反亲和性和节点亲和性，以确保每个 Pod 运行在不同的节点上以确保高可用性
+"""
+#版本号
+apiVersion: apps/v1
+#资源类型
+kind: Deployment
+#资源类型的元数据
+metadata:
+#pod名字
+  name: hd-nginx
+# namespace: 命名空间
+  labels:
+    app: hd-nginx
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: hd-nginx  #必填，通过此标签匹配对应pod<key: value>
+  template:  #必填，应用容器模版定义
+    metadata:
+      labels:
+        app: hd-nginx #必填，遇上面matchLabels的标签相同
+    spec:
+      containers: #必填，定义容器列表
+      - name: hd-nginx #必填，容器名称
+        image: nginx #必填，容器的镜像名称
+      # imagePullPolicy: IfNotPresent #获取镜像的策略 Alawys表示下载镜像 IfnotPresent表示优先使用本地镜像，没有就下载镜像，Nerver表示仅使用本地镜像
+        ports:
+        - containerPort: 80 #容器需要监听的端口号
+      affinity: #亲和性策略
+        podAntiAffinity: #pod反亲和性（主要解决pod不能和哪些pod部署在同一个拓扑域中的问题。它们处理的是Kubernetes集群内部pod和pod之间的关系）
+          requiredDuringSchedulingIgnoredDuringExecution:  #required开头的这个参数是硬限制。调度器只有在规则被满足的时候才能执行调度 类似nodeSelector
+          - labelSelector:  #标签选择器
+              matchExpressions:  #按照节点label列出节点选择器列表
+              - key: app
+                operator: In  #key与value同时存在   #Exists：只判断是否存在key，不用关心value值是什么
+                values:
+                - hd-nginx
+            topologyKey: "kubernetes.io/hostname"  #topologyKey 指定要运行在具备什么样标签key的Node上   //topologyKey 就是用于筛选 Node 的 (个人理解其实就是调度范围)
+        nodeAffinity:    #节点亲和性
+          requiredDuringSchedulingIgnoredDuringExecution:  #节点硬亲和性
+            nodeSelectorTerms:   #节点选择列表
+            - matchExpressions:  #按照节点label列出节点选择器列表
+              - key: wz
+                operator: In   #operator：操作符，指定key与value的关系  In：key与value同时存在，一个key多个value的情况下，value之间就成了逻辑或效果
+                values:
+                - IDC
+                - IDC2
+
+
+一、节点打标签
+kubectl label nodes k8s-node01 wz=IDC
+kubectl label nodes k8s-node02 wz=IDC2
+
+二、写控制器yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hd-nginx
+  labels:
+    app: hd-nginx
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: hd-nginx
+  template:
+    metadata:
+      labels:
+        app: hd-nginx
+    spec:
+      containers:
+      - name: hd-nginx
+        image: nginx
+        ports:
+        - containerPort: 80
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+              - key: app
+                operator: In
+                values:
+                - hd-nginx
+            topologyKey: "kubernetes.io/hostname"
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: wz
+                operator: In
+                values:
+                - IDC
+                - IDC2
+
+
