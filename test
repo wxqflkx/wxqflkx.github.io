@@ -1,0 +1,80 @@
+####
+Service 是一种可以暴露 Pod 给其他容器或外部用户访问的抽象概念
+几种方式？3种
+ClusterIP用于内部服务发现和通信,NodePort和LoadBalancer可以在某种程度上从外部访问服务, 这3种不如Ingress功能全面
+
+你创建一个service之后，
+~~~如果类型是ClusterIP --只能从集群内访问 , 通常用来定义内部微服务
+service就会自动创建一个虚拟IP（service cluster ip）
+在 Service 的 spec 中,使用 selector对象来关联后端pod
+K8s就会为 Service 自动创建一个相关的 Endpoints 对象，用来记录由这个 Service管理的 Pod 的 IP 地址和端口号信息
+当访问 Service 的 Cluster IP 地址时，请求先到达K8s 集群节点上的 kube-proxy 组件
+kube-proxy 会根据 Service 监听的端口号和协议，选择对应的后端（Endpoints）地址和端口，然后转发请求到这些后端 Pod 上。
+kube-proxy 还会通过 IPVS 规则来做请求的负载均衡。
+
+service和pod独立运作。
+
+FQDN（全限定域名）
+service只要创建完成，就可以解析它的服务名
+service名字.命名空间.svc.cluster.local
+
+hd-nginx-service.default.svc.cluster.local
+
+
+svc.cluster.local 这个是默认的，可以不写
+
+
+~~如果类型是Nodeport.它除了会创建一个clusterIP外，还会给所有node节点分配一个静态端口号（将服务暴露到每个Node的同一端口上。客户端可以通过任何一个Node的IP和端口进行访问）。供集群外部访问service
+(生产环境一般不推荐直接使用,适用于测试环境。不经常使用,局限性较大)
+
+外部访问 nodeIP：nodeport------>kube-proxy监听到这个端口请求--->service clusterip ---> 然后获取到关联的pod和端口---->使用网络地址转换（NAT）
+技术把节点的IP和Nodeport 转换成pod的IP和容器内应用端口---->最后把请求转发到pod上
+
+
+
+Kubernetes的三种外部访问方式：NodePort、LoadBalancer和Ingress？
+同：都是将集群外部流量导入集群内
+
+###
+
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: hd-nginx-service
+  labels:
+    app: hd-nginx
+spec:
+  type: ClusterIP  #类型为 ClusterIP，表示只能从 Kubernetes 集群内部访问该 Service。
+  ports:
+  - name: tcp-80
+    port: 10080   #svc监听的端口
+    protocol: TCP    #TCP协议
+    targetPort: 80   #转发到容器的80端口
+    appProtocol: http
+  selector:
+    app: hd-nginx
+
+
+###
+
+ExternalName Service 主要用于访问位于集群外部的服务，作用是返回集群外服务的域名。
+把这个 DNS 域名映射到 Service 名称上，然后在 Kubernetes 内部的其他组件中直接通过 Service 名称访问这个服务
+
+创建这个svc
+( ExternalName类型的服务创建后，pod可以通过(全限定域名)my-mysql-external.default.svc.cluster.local域名连接到外部服务)
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: my-du    #定义这个service的名字
+spec:
+  type: ExternalName
+  externalName: www.baidu.com  #比如要访问外面的baidu
+  ports:
+  - port: 80
+
+kubectl apply -f exter-service.yaml
+kubectl run busybox --image busybox:latest --restart=Never --rm -it busybox -- sh
+ping mydu.default.svc.clustar.local  发现可以ping通
+
