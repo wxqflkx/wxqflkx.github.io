@@ -1,8 +1,0 @@
-k8s篇-应用持久化存储 --容器一旦被重启或删除，容器运行时内部产生的文件数据也会被清理掉，为了保存数据，要做数据持久化。 Docker怎么做的，通过volume的方式挂载。 但其实这个 Volume 也只是宿主机上本地磁盘中的一个目录，也就是说，volume方式是将容器里面的数据都保存到宿主机上。
-K8怎么做的？ 本地存储（emptyDir / hostPath） emptyDir类型的volume, 创建pod时，会一起被创建出来，会在pod所在的node节点上生成一个空目录。只要pod在，他就在。否则就不在。
-hostPath（类似于docker -v /hostdir:/container-dir/）： 该类型是将Node上指定的文件或目录挂载到Pod中，pod被删除时，Node上对应的该Volume的文件或目录不会被删除，不过一旦node节点崩溃了，hostPath也就没法访问了。
-
-外部存储（如NFS，ceph） ---- 为了更安全，我们也可以将数据存储到外部的远程磁盘上，比如放到NFS服务器。但NFS有单点问题，生产不建议用
-
-
-PVC只有绑定了PV之后才能被Pod使用
