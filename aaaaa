@@ -1,1 +1,444 @@
+#nginx+keepalived 
+#keepalived的作用是检测服务状态，实现nginx的高可用
+#nginx做负载均衡
+
+
+#反向代理：接收来自客户端的请求，并将其转发到后端服务器上处理。处理完成后，反向代理将结果返回给客户端。
+#负载均衡：通过一些负载均衡算法将请求分发到多个后端服务器进行处理
+#高可用：多个机器做相同的事情
+
+
+yum -y install keepalived
+
+
+#检测nginx脚本
+[root@harbor-backup keepalived]# cat check_nginx.sh 
+#!/bin/bash
+/usr/bin/curl -I http://localhost &>/dev/null
+if [ $? -ne 0 ];then
+    systemctl stop keepalived
+fi
+chmod +x /etc/keepalived/check_nginx.sh
+
+#启动命令
+systemctl restart keepalived && systemctl enable keepalived && systemctl status keepalived
+
+
+
+#修改主备配置文件（默认抢占模式：master服务故障后backup会变成master，当master服务又恢复的时候，master会抢占VIP）
+#如果要配置非抢占模式，只需要修改两个地方。其余不用动
+#1. 两个节点的state都必须配置为BACKUP   state BACKUP
+#2. 两个节点在vrrp_instance VI_1下nopreempt参数,如
+#state BACKUP
+#nopreempt
+
+####################下面是默认模式
+##########主配置vi /etc/keepalived/keepalived.conf
+
+###可以写个脚本
+vi a.sh
+cat << 'CAT_END' >/etc/keepalived/keepalived.conf
+粘贴配置文件内容到中间
+CAT_END
+
+--------------------------------------------
+
+! Configuration File for keepalived
+
+global_defs {
+   router_id LVS_DEVEL
+}
+vrrp_script chk_nginx {
+    script "/etc/keepalived/check_nginx.sh"
+    interval 1
+    fall 2
+    rise 1
+
+}
+vrrp_instance VI_1 {
+    state MASTER
+    interface ens33
+    virtual_router_id 51
+    priority 100
+    advert_int 1
+    authentication {
+        auth_type PASS
+        auth_pass 1111
+    }
+    virtual_ipaddress {
+        192.168.40.50
+    }
+    track_script {
+        chk_nginx
+    }
+
+}
+
+
+#######从配置vi /etc/keepalived/keepalived.conf
+! Configuration File for keepalived
+
+global_defs {
+   router_id LVS_DEVEL
+}
+vrrp_script chk_nginx {
+    script "/etc/keepalived/check_nginx.sh"
+    interval 1
+    fall 2
+    rise 1
+}
+vrrp_instance VI_1 {
+    state MASTER
+    interface ens33
+    virtual_router_id 51
+    priority 50
+    advert_int 1
+    authentication {
+        auth_type PASS
+        auth_pass 1111
+    }
+    virtual_ipaddress {
+        192.168.40.50
+    }
+    track_script {
+        chk_nginx
+    }
+}
+
+
+
+
+#############
+//关闭防火墙和Selinux
+
+systemctl stop firewalld
+systemctl disable firewalld
+setenforce 0
+
+---这样就能用xshell连接了
+
+//修改主机名
+hostnamectl set-hostname k8s-containerd &&bash
+
+连上以后，永久关闭selinux
+sed -i 's/SELINUX=enforcing/SELINUX=disabled/' /etc/sysconfig/selinux 
+
+yum -y install vim net-tools lrzsz epel-release wget yum-utils
+
+#命令自动补全工具
+yum install -y bash-completion bash-completion-extras
+#时间同步工具
+yum -y install ntpdate
+ntpdate -u  pool.ntp.org
+date &&bash
+
+#开启内核数据包转发功能，开启 bridge 模式下的防火墙规则过滤功能，开启了对 IPv6/IPv4数据包的过滤功能
+modprobe br_netfilter
+echo "modprobe br_netfilter" >> /etc/profile
+cat > /etc/sysctl.d/docker.conf <<EOF
+net.bridge.bridge-nf-call-ip6tables = 1
+net.bridge.bridge-nf-call-iptables = 1
+net.ipv4.ip_forward = 1
+EOF
+sysctl -p /etc/sysctl.d/docker.conf
+
+#安装 docker-ce 官方源
+yum-config-manager --add-repo http://mirrors.aliyun.com/docker-ce/linux/centos/docker-ce.repo
+#这个是docker官方: yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+
+# 查看docker-ce 官方源中的软件版本
+yum list docker-ce --showduplicates
+
+
+#安装最新版本 Docker 并配置阿里云镜像加速
+yum -y install docker-ce
+systemctl enable --now docker
+docker version
+
+
+#创建 docker 主配置文件, 默认不存在
+
+mkdir /etc/docker
+cat > /etc/docker/daemon.json <<EOF
+{
+  "insecure-registries": ["registry.access.redhat.com","quay.io"],   #私有仓库
+  "registry-mirrors": ["https://yz9elmr9.mirror.aliyuncs.com"],       #镜像加速
+  "exec-opts": ["native.cgroupdriver=systemd"],       
+  "live-restore": true,                                                                              
+  "data-root": "/data/docker" 
+}
+EOF
+
+#重启docker并查看docker信息
+systemctl daemon-reload
+systemctl restart docker
+docker info
+
+
+
+#查看容器挂载的数据卷目录
+yum -y install jq
+docker inspect 容器名|jq .[].HostConfig.Binds
+
+
+
+
+
+
+
+
+##################
+====汇总
+
+熟练使用docker, 包括镜像,容器,dockerfile编写及harbor高可用部署维护, 熟悉Containerd构建镜像及对接私有镜像仓库
+
+
+项目：Harbor镜像同步高可用
+背景：为避免harbor发生单点故障，导致无法拉取镜像的问题，采用Harbor双主互从，实现业务的高可用性。
+实施：
+1.双机房部署
+2.前端采用Nginx+Keepalived实现业务的负载均衡及入口统一；
+3.后端部署harbor，使用docker-compose管理，采用双主互从方式实现数据一致性。
+4.相关权限控制
+
+
+##面试相关问题？
+----harbor组件构成？
+core：核心组件，提供UI，用户验证
+proxy : harbor通过前置反向代理把请求转发给后端
+registry：负责存储docker镜像，处理客户端命令（pull/push）
+db: harbor数据库，存储用户权限等
+log：收集其他组件服务
+
+dockerfile指令
+FROM
+MAINTAINER
+ENV
+RUN
+COPY
+ADD
+WORKDIR
+EXPOSE
+CMD
+
+docker build
+##########################3
+
+ansible-playbook
+角色：hosts 指定要管理的主机   all表示所有
+任务tasks  具体要执行的模块（根据流程定义不同的模块）
+模块
+- name:
+  shell
+剧本 注意以.yml或.yaml结尾
+
+- hosts: all
+   tasks:
+    - name: 01 创建目录
+       file: 
+       path: /server/files/  
+       state: directory
+ tasks:
+     - name: 02 分发文件
+       copy: scr=/etc/hosts dst=/server/files/     下发文件
+
+- name: 01. 下载软件包/tmp/
+get_url: 
+
+
+
+   - name: 01. 部署nfs-utils,rpcbind
+     yum:
+       name: nfs-utils,rpcbind
+       state: present
+
+
+    - name: 04-1. 启动服务rpcbind,nfs(注意顺序)
+     systemd:
+       name: rpcbind
+       enabled: yes
+       state: started
+
+
+daemon_reload: yes
+
+- hosts: backup
+gather_facts: no #不采集对方机器的数据，提高执行速度
+tasks:
+
+
+     debug:
+       msg: "这是web01,正在安装软件...."
+
+when判断
+when: ansible_hostname == "web01"
+
+
+
+ansible_hostname is match("web|backup")  or
+ansible_hostname is not match("web|backup")
+
+
+ignore_errors: true
+
+
+
+
+
+
+cdn做哪些操作?  配置域名加速，静态资源缓存，针对缓存进行url预热更新
+
+
+
+############
+containerd简介
+containerd是从Docker中分离出来的底层容器运行时. 可以在宿主 
+机中管理完整的容器生命周期。
+
+容器运行时：容器运行的环境
+
+CRI ：容器运行时接口
+
+Docker CLI :  docker的命令行工具
+
+K8s通过CRI与容器运行时通信。K8S发布CRI，统一了容器运行时接口。凡是支持CRI的容器运行时，皆可作为K8S的底层容器运行时。
+
+K8s1.24之后，移除的是dockershim。 因为Docker不支持CRI。K8s提供dockershim这个组件充当k8s与docker容器运行时之间的桥梁。
+
+K8s 1.24之后，如果还想使用docker，需自行安装cri-docker组件，不然就用containerd（它内置了CRI插件，kubelet可以直接调用containerd）。
+
+
+Docker作为K8S的容器运行时，kubelet需要先通过dockershim去调用Docker，再通过Docker去调用containerd
+
+而如果使用containerd作为K8S的容器运行时，由于containerd内置了CRI插件，kubelet可以直接调用containerd。（调用链变短了，性能就相应提升了。同时资源占用也会变低）
+
+
+
+安装
+1.安装前步骤：和安装docker-ce一样
+2.安装docker-ce源
+yum-config-manager --add-repo 
+http://mirrors.aliyun.com/docker-ce/linux/centos/docker-ce.repo
+
+安装配置containerd
+#安装
+yum -y install containerd
+#初始化配置
+containerd config default > /etc/containerd/config.toml
+#修改配置文件，修改下列参数
+#1.修改 cgroup Driver 为 systemd
+SystemdCgroup = true
+
+#2.修改镜像加速，endpoint 位置添加阿里云的镜像源
+[plugins."io.containerd.grpc.v1.cri".registry.mirrors."docker.io"]
+endpoint = ["https://yz9elmr9.mirror.aliyuncs.com"]
+
+#3.更改 sandbox_image
+sandbox_image = "registry.aliyuncs.com/google_containers/pause:3.6"
+
+##启动
+systemctl restart containerd && systemctl enable containerd && systemctl status containerd
+
+#####
+Containerd 的默认命令行工具（crictl）不是很好用，和 docker 也不兼容。
+可以使用 nerdctl作为containerd的客户端（命令行工具）。可以兼容 docker命令行工具
+
+nerdctl 下载地址：https://github.com/containerd/nerdctl/releases
+
+#解压
+tar xf nerdctl-1.7.0-linux-amd64.tar.gz 
+mv nerdctl /usr/local/bin/
+
+#设置nerdctl自动补全
+echo "source <(nerdctl completion bash)" >> /etc/profile
+source /etc/profile
+
+#测试
+nerdctl ps -a
+
+#基础命令（和docker一样）
+nerdctl pull [镜像名称]   //下载镜像
+nerdctl images   //查看镜像
+nerdctl rmi [镜像名称||镜像 ID]  //删除镜像
+nerdctl save -o nginx.tar [镜像名称||镜像 ID]  //导出镜像
+nerdctl load -i nginx.tar  //导入镜像
+nerdctl tag SOURCE_IMAGE[:TAG] TARGET_IMAGE[:TAG]   //给镜像打标签
+
+#创建并启动容器？需要依赖CNI插件。要创建容器必须先安装 cni 网络插件，再从镜像启动并运行容器
+
+基于 nerdctl + CNI 网络插件运行容器
+
+CNI 网络插件下载地址：https://github.com/containernetworking/plugins/releases
+
+
+#创建目录并把下载的包解压
+mkdir -p /opt/cni/bin && cd /opt/cni/bin/
+tar xf cni-plugins-linux-amd64-v1.3.0.tgz -C /opt/cni/bin/
+#测试：拉取，启动
+nerdctl pull nginx:1.18
+nerdctl run -d --name=my-ng -p 80:80 nginx:1.18
+
+
+基于 nerdctl + buildkitd 构建容器镜像
+
+buildkit 是从 Docker 公司的开源出来的一个镜像构建工具包，Docker公司开发的下一代 docker build 工具。buildctl 客户端负责解析 Dockerfile 文件，并向服务端 buildkitd 发出构建请求
+
+buildkit下载地址：https://github.com/moby/buildkit/releases
+
+#将下载的包解压并移动
+tar xvf buildkit-v0.12.3.linux-amd64.tar.gz
+mv buildctl buildkitd /usr/local/bin/
+
+#创建编辑套接字文件
+vi /lib/systemd/system/buildkit.socket
+
+[Unit]
+Description=BuildKit
+[Socket]
+ListenStream=%t/buildkit/buildkitd.sock
+[Install] 
+WantedBy=sockets.target
+
+#创建编辑服务文件
+vi /lib/systemd/system/buildkitd.service
+
+[Unit]
+Description=BuildKit
+Documentation=https://github.com/moby/buildkit
+# Requires=buildkit.socket
+After=buildkit.socket
+[Service]
+ExecStart=/usr/local/bin/buildkitd --oci-worker=false --containerd-worker=true
+[Install]
+WantedBy=multi-user.target
+
+#启动
+systemctl daemon-reload && systemctl enable buildkitd --now && systemctl status buildkitd
+
+#测试构建镜像
+mkdir /bobo && cd /bobo
+vi Dockerfile
+FROM nginx:1.18
+ADD index.html /usr/share/nginx/html/index.html
+EXPOSE 80
+CMD ["nginx","-g","daemon off;"]
+#构建
+nerdctl build -t my-ng2 .
+#启动
+nerdctl run -d -p 81:80 my-ng2
+
+
+Containerd 对接私有镜像仓库 Harbor(网上找详细文档)
+#配置 containerd
+
+
+
+
+
+
+
+
+
+
+
 
